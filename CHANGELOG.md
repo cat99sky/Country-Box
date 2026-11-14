@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.5 — 2026-11-14
+
+- *Donkey Kong Country Returns HD* now accepts copies of the **physical cartridge**. Until now the launcher only
+  recognised the eShop version and called a cartridge copy incompatible, even though it is the same game
+  ([#7](https://github.com/zWalt01/Country-Box/issues/7)).
+- After updating, each game asks for a quick Prepare (a few seconds on PC; your saves and settings stay).
+- A reminder: **save states are still experimental** (F5 saves, F6 loads; Select+Start opens the menu). I haven't
+  received any feedback on them yet, so if you try them, please tell me how it went in
+  [#3](https://github.com/zWalt01/Country-Box/issues/3) or a new issue — even "it worked fine" helps.
+
+Thank you for playing and for every report so far. Any feedback is appreciated: it's what helps me make Country-Box
+better.
+
 ## 1.0.4 — 2026-11-13
 
 - **Save states (experimental).** F5 saves, F6 loads; with a controller, Select+Start opens the menu with *Save

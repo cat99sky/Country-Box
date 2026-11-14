@@ -1304,7 +1304,7 @@ void Ui::draw_update_ask(ImVec2 mn, ImVec2 mx) {
         y += std::min(ns.y, std::max(90.f * s_, (mx.y - mn.y) - (y - mn.y) - 250 * s_)) + 12 * s_;
     }
     text_center(fonts.small, cx, std::min(y, mx.y - 190 * s_), art::kMuted,
-                "Saves and settings are never touched. Each game is rebuilt for the new version.");
+                "Saves and settings are never touched. Each game gets a quick Prepare after updating.");
     float bh = 66 * s_, by = mx.y - 36 * s_ - bh;
     if (button("##updnow", "Update now", V(mx.x - pad - 340 * s_, by), V(340 * s_, bh), art::kBanana, true, fonts.big))
         start_update();

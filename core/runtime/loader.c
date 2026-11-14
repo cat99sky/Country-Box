@@ -94,6 +94,25 @@ static void hex32(const uint8_t d[32], char out[65]) {
     for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
 }
 
+// Country-Box: main.npdm hashes that stand for the same game build. One build can ship in more than one retail
+// package, each with its own signed main.npdm and the same code (Returns HD 1.0.0: two Program NCAs, measured
+// 2026-11-14, GitHub issue #7). modules.c pins the hash of the copy the build was made from; any hash of its group
+// is accepted too, so a build made from one package runs with the other. The same pairs are alt_sha256 in
+// games/<game>/manifest.toml (the launcher's check): keep both lists in step.
+static const char *const npdm_equivalent[][2] = {
+    {"1764f798d19e966e08f3d3b26b01d5239e1287baef32c60bba451cceb91ea542",    // Returns HD 1.0.0 (eShop package)
+     "2002509a1db8ad15e731d4facb41de533adf5e6980a6ea836e0bd6b6d3175cd2"},   // Returns HD 1.0.0 (second package)
+};
+
+static int npdm_same_build(const char *want, const char *got) {
+    for (size_t i = 0; i < sizeof npdm_equivalent / sizeof npdm_equivalent[0]; i++) {
+        int w = 0, g = 0;
+        for (int k = 0; k < 2; k++) w |= !strcmp(npdm_equivalent[i][k], want), g |= !strcmp(npdm_equivalent[i][k], got);
+        if (w && g) return 1;
+    }
+    return 0;
+}
+
 uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len) {
     const char *want = NULL;
     for (int i = 0; i < rt_exefs_sha256_count; i++)
@@ -107,7 +126,7 @@ uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len) {
     char hex[65];
     rt_sha256(p, *len, d);
     hex32(d, hex);
-    if (strcmp(hex, want)) rt_fatal("loader: %s has SHA-256 %s, expected %s", path, hex, want);
+    if (strcmp(hex, want) && !(!strcmp(file, "main.npdm") && npdm_same_build(want, hex))) rt_fatal("loader: %s has SHA-256 %s, expected %s", path, hex, want);
     return p;
 }
 

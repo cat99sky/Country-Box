@@ -40,11 +40,13 @@ bool manifest_parse(const std::string &text, Manifest &m, std::string *err) {
     ManifestFile *cur = nullptr;
     size_t pos = 0;
     int lineno = 0;
+    std::string id_text;   // the text the id is taken from: every byte but the alt_sha256 lines
     while (pos < text.size()) {
-        size_t nl = text.find('\n', pos);
+        size_t nl = text.find('\n', pos), start = pos;
         std::string line = trim(text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
         pos = nl == std::string::npos ? text.size() : nl + 1;
         lineno++;
+        if (line.rfind("alt_sha256", 0) != 0) id_text.append(text, start, pos - start);
         if (line.empty() || line[0] == '#') continue;
         if (line == "[[file]]") {
             m.files.emplace_back();
@@ -71,6 +73,13 @@ bool manifest_parse(const std::string &text, Manifest &m, std::string *err) {
             if (k == "path") cur->path = sv;
             else if (k == "size") cur->size = nv;
             else if (k == "sha256") cur->sha256 = sv;
+            else if (k == "alt_sha256") {
+                if (sv.size() != 64) {
+                    if (err) *err = "line " + std::to_string(lineno) + ": alt_sha256 is not a SHA-256";
+                    return false;
+                }
+                cur->alt_sha256.push_back(sv);
+            }
         } else if (k == "game") m.game = sv;
         else if (k == "name") m.name = sv;
         else if (k == "title_id") m.title_id = sv;
@@ -89,7 +98,7 @@ bool manifest_parse(const std::string &text, Manifest &m, std::string *err) {
     }
     Sha256 *s = sha256_new();
     uint8_t d[32];
-    sha256_update(s, text.data(), text.size());
+    sha256_update(s, id_text.data(), id_text.size());
     sha256_final(s, d);
     char hex[65];
     for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
@@ -325,7 +334,7 @@ void VerifyJob::run() {
             r.kind = cancel_flag_ ? VerifyResult::Cancelled : VerifyResult::ReadError;
             return finish();
         }
-        if (f->sha256 != hex) exefs_differs = true;
+        if (!f->matches(hex)) exefs_differs = true;
     }
     if (exefs_differs) {
         r.details.clear();
@@ -362,7 +371,7 @@ void VerifyJob::run() {
                 int rc = sha256_file((root / f->path).c_str(), hex, &done_bytes, &cancel_flag_);
                 std::lock_guard<std::mutex> g(lock);
                 if (rc && !cancel_flag_) read_errors++, add_detail(r, f->path + " (can't be read)", read_errors + r.damaged);
-                else if (!rc && f->sha256 != hex) r.damaged++, add_detail(r, f->path, read_errors + r.damaged);
+                else if (!rc && !f->matches(hex)) r.damaged++, add_detail(r, f->path, read_errors + r.damaged);
                 files_done.fetch_add(1);
             }
         });

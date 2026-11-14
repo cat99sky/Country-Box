@@ -12,6 +12,16 @@ struct ManifestFile {
     std::string path;     // "exefs/main", "romfs/..."
     uint64_t size = 0;
     std::string sha256;   // hex
+    // Other accepted hashes of the same file: only exefs/main.npdm has them, one per retail package of the same
+    // build (Returns HD 1.0.0 ships in two Program NCAs with the same code and a differently signed main.npdm).
+    // Not part of Manifest::id, so adding one does not ask anybody to check their copy again.
+    std::vector<std::string> alt_sha256;
+    bool matches(const std::string &hex) const {
+        if (hex == sha256) return true;
+        for (auto &a : alt_sha256)
+            if (hex == a) return true;
+        return false;
+    }
 };
 
 struct Manifest {
@@ -22,7 +32,8 @@ struct Manifest {
     std::string version_key;   // build_linux.py's key ("v0")
     uint64_t bytes = 0;
     std::vector<ManifestFile> files;
-    std::string id;            // SHA-256 of the manifest text: a copy checked against another manifest is checked again
+    std::string id;            // SHA-256 of the manifest text without its alt_sha256 lines: a copy checked against
+                               // another manifest is checked again
 };
 
 // The embedded manifest of a game, NULL when unknown or unreadable.

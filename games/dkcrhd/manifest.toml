@@ -18,6 +18,7 @@ sha256 = "5417520786a3a0bab8ff3326949b676b6c59a6bbee5afab94bdbeade60c61ebc"
 path = "exefs/main.npdm"
 size = 1604
 sha256 = "1764f798d19e966e08f3d3b26b01d5239e1287baef32c60bba451cceb91ea542"
+alt_sha256 = "2002509a1db8ad15e731d4facb41de533adf5e6980a6ea836e0bd6b6d3175cd2"
 
 [[file]]
 path = "exefs/rtld"

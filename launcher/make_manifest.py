@@ -29,6 +29,22 @@ def title_id(npdm):
     return '%016X' % struct.unpack_from('<Q', b, aci + 0x10)[0]
 
 
+def known_alts(manifest):
+    """{path: [alt_sha256, ...]} of an existing manifest (the main sha256 of a file stays an alt if it changes)."""
+    main, alts, path = {}, {}, None
+    if manifest.is_file():
+        for line in manifest.read_text().splitlines():
+            k, _, v = (s.strip() for s in line.partition('='))
+            v = v.strip('"')
+            if k == 'path':
+                path = v
+            elif k == 'sha256':
+                main[path] = v
+            elif k == 'alt_sha256':
+                alts.setdefault(path, []).append(v)
+    return {p: [main[p]] + a for p, a in alts.items()}
+
+
 def sha256(p):
     h = hashlib.sha256()
     with open(p, 'rb') as f:
@@ -69,8 +85,12 @@ def main():
         f'files = {len(files)}',
         f'bytes = {total}',
     ]
+    # alt_sha256: other retail packages of the same build (only exefs/main.npdm has them; launcher/src/manifest.h).
+    # They are kept from the manifest being replaced, since one dump only ever shows its own.
+    alts = known_alts(out)
     for r, h in zip(files, hashes):
         lines += ['', '[[file]]', f'path = "{r}"', f'size = {(copy / r).stat().st_size}', f'sha256 = "{h}"']
+        lines += [f'alt_sha256 = "{x}"' for x in alts.get(r, []) if x != h]
     out.write_text('\n'.join(lines) + '\n')
     print(f'{out}: {len(files)} files, {total:,} bytes')
 
