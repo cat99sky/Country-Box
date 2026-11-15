@@ -50,6 +50,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "nvn_api.h"
 #include "platform/platform.h"
 #include "shader_prep.h"
 
@@ -1312,6 +1313,19 @@ static int in_load(const uint8_t iid[32], Inputs *in) {
 
 // ---- translation
 
+// Like LASRecomp's opt-in preparation diagnostics: identify actual misses and
+// waits, without inferring coverage from the size of the in-memory cache.
+// request is also the provisional key until the first translation learns its mask.
+static void trace_shader(const char *event, const Req *r, int stage, const GfxShader *s, uint64_t frame, uint64_t ns) {
+    if (!(rt_trace & RT_TRACE_GFX)) return;
+    char request[65], key[65] = "-", iid[65] = "-";
+    key_hex(r->key, request);
+    if (s) key_hex(s->key, key), key_hex(s->iid, iid);
+    else if (r->final) key_hex(r->key, key), key_hex(r->iid, iid);
+    rt_log("gfx_shader: %s frame %llu stage %d request %s key %s input %s %.3f ms",
+           event, (unsigned long long)frame, stage, request, key, iid, ns / 1e6);
+}
+
 static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                       const GfxShaderAnswers *a) {
     const uint8_t *key = r->key;
@@ -1324,6 +1338,9 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     if (look && (s = mem_find(look))) return plat_atomic_inc(&n_hits), s;
     if (look && (s = disk_load(look, look_iid))) return plat_atomic_inc(&n_hits), mem_insert(s);
 
+    uint64_t trace_start = (rt_trace & RT_TRACE_GFX) ? plat_now_ns() : 0;
+    uint64_t trace_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    trace_shader("miss", r, stage, NULL, trace_frame, 0);
     uint64_t skip = stage == GFX_STAGE_CS ? 0 : CODE_SKIP;
     char hex[65], code_path[PATH_CAP + 80], spv_path[PATH_CAP + 80], res_path[PATH_CAP + 80];
     key_hex(key, hex);
@@ -1367,6 +1384,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     }
     in_store(s->iid, stage, control, code, r, a);
     plat_atomic_inc(&n_xlated);
+    if (trace_start) trace_shader("translated", r, stage, s, trace_frame, plat_now_ns() - trace_start);
     return mem_insert(s);
 }
 
@@ -1506,6 +1524,8 @@ const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8
     Req r;
     if (!pending || !req_init(&r, stage, control, code, code_size, NULL, a)) return s;
     uint64_t p0 = perf_begin();   // the wait counts as the render thread's translation time
+    uint64_t trace_start = (rt_trace & RT_TRACE_GFX) ? plat_now_ns() : 0;
+    uint64_t trace_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     plat_mutex_lock(&X.lock);
     for (XJob *j = X.head, *prev = NULL; j; prev = j, j = j->next)
         if (!memcmp(j->r.key, r.key, 32)) {                // queued: to the front, the worker takes it next
@@ -1520,8 +1540,13 @@ const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8
     while ((w = *wait_slot(r.key)) && !w->failed) plat_cond_wait(&X.done, &X.lock);
     plat_mutex_unlock(&X.lock);
     perf_end(PERF_XLATE, p0);
-    if (w) return NULL;                                    // failed: logged by the worker
+    uint64_t waited = trace_start ? plat_now_ns() - trace_start : 0;
+    if (w) {
+        trace_shader("wait-failed", &r, stage, NULL, trace_frame, waited);
+        return NULL;                                      // failed: logged by the worker
+    }
     s = gfx_shader_get_async(stage, control, code, code_size, a, &pending);
+    trace_shader("wait", &r, stage, s, trace_frame, waited);
     return pending ? NULL : s;
 }
 

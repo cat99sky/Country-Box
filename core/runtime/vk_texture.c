@@ -53,6 +53,7 @@ typedef struct Tex {
     uint32_t wgen;                // page generation of the last upload check
     uint32_t checked;             // submit_epoch of the last check from a draw binding
     int uploaded, released;
+    int upload_failed;           // retry even if write-watch already consumed the CPU write
     uint32_t n_up;                // uploads of this entry (vk_texture_debug)
     int last_ch;                  // last vk_mem_changed result of make_fresh: 1 written, 0 clean, -1 not tracked
     struct Tex *next_at;          // other entries at the same storage address
@@ -677,7 +678,7 @@ static void astc_dump(const Tex *e, const VkAstcRegion *ar, uint32_t n, const ui
 }
 
 // Copies the storage into the image: levels lv0 .. lv1 - 1 (clamped to the image's) of every layer; upload_full is
-// all of them. 0 when the texture has no CPU layout.
+// all of them. 0 when the upload cannot be recorded (including GPU ASTC failure).
 static int upload_levels(Tex *e, UpStat *st, uint32_t lv0, uint32_t lv1) {
     static volatile long n_bad, n_undecoded;
     const tex_t *t = &e->t;
@@ -777,7 +778,7 @@ static int upload_levels(Tex *e, UpStat *st, uint32_t lv0, uint32_t lv1) {
     free(ar);
     free(rg);
     *st = (UpStat){.levels = lv1 - lv0, .layers = layers, .total = total, .stage_ns = stage_ns, .ds_ns = ds_ns, .cv_ns = cv_ns};
-    return 1;
+    return !agpu || checked;
 }
 static int upload_full(Tex *e, UpStat *st) { return upload_levels(e, st, 0, UINT32_MAX); }
 
@@ -859,22 +860,25 @@ static void astc_pend_step(void) {
     if (!nastc_pend || f == at) return;
     at = f;
     uint64_t b = astc_budget();
-    int done = 0;
-    while (nastc_pend) {
+    int done = 0, left = nastc_pend;
+    while (nastc_pend && left) {
         Tex *e = astc_pend[0];
-        if (!e->pub.min_lod) { astc_pend_remove(e); continue; }
+        if (!e->pub.min_lod) { astc_pend_remove(e); left--; continue; }
         uint32_t lv = e->pub.min_lod - 1u;
         uint64_t t = level_texels(e, lv);
         if (done && astc_used_now() + t > b) break;
         UpStat st;
-        if (!upload_levels(e, &st, lv, lv + 1)) {   // no CPU layout: stop clamping
-            set_min_lod(e, 0);
-            astc_pend_remove(e);
+        if (e->upload_failed || !upload_levels(e, &st, lv, lv + 1)) {
+            // Keep sampling the last valid tail. Retry at most once this frame,
+            // behind the other textures; a failed decoder must not block the FIFO.
+            memmove(astc_pend, astc_pend + 1, (size_t)(nastc_pend - 1) * sizeof *astc_pend);
+            astc_pend[nastc_pend - 1] = e;
+            left--;
             continue;
         }
         astc_used += t, done++, n_pend_levels++;
         set_min_lod(e, lv);
-        if (!lv) astc_pend_remove(e);
+        if (!lv) { astc_pend_remove(e); left--; }
     }
 }
 
@@ -1060,7 +1064,15 @@ static void upload(Tex *e) {
     uint64_t p0 = perf_begin(), u0 = kern_now_ns();
     UpStat st = {0};
     uint32_t k = astc_first_level(e);   // 0 for all but ASTC, which upload_part does not take
-    if (!(e->up_part && upload_part(e, &st)) && !upload_levels(e, &st, k, UINT32_MAX)) return;
+    if (e->upload_failed) e->up_part = 0;   // write-watch may already have consumed the failed upload's pages
+    if (!(e->up_part && upload_part(e, &st)) && !upload_levels(e, &st, k, UINT32_MAX)) {
+        e->upload_failed = 1;
+        perf_end(PERF_TEX, p0);
+        return;
+    }
+    // A descriptor may currently name the dummy image after a failed first upload.
+    if (e->upload_failed && !e->uploaded) tex_gen_bump(e->pub.addr);
+    e->upload_failed = 0;
     e->up_part = 0;
     if (e->f.astc_bw) {
         uint64_t t = 0;
@@ -1139,7 +1151,8 @@ static void make_fresh(Tex *e) {
     e->wgen = now;
     e->last_ch = ch;
     e->up_part = ch == 1, e->up_since = prev;   // the blocks written since the last check (upload_part)
-    if (ch) upload(e);   // 1 written, -1 not tracked: both upload again
+    if (ch || e->upload_failed) upload(e);   // also retry a consumed write after an upload failure
+    if (e->upload_failed) e->wgen = prev;
 }
 
 // make_fresh for draw bindings: the page check answers from this submission's write-watch snapshot (vk_memory.c
@@ -1156,7 +1169,8 @@ static void make_fresh_snap(Tex *e) {
     if (!e->uploaded) { upload(e); return; }
     e->last_ch = ch;
     e->up_part = ch == 1;
-    if (ch) upload(e);
+    if (ch || e->upload_failed) upload(e);
+    if (e->upload_failed) e->wgen = prev;
 }
 
 // ---------------------------------------------------------------- aliases (MP4_TEX_ALIAS)
@@ -1313,8 +1327,9 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
     lock();
     Tex *e = entry_of(t);
     if (e) make_fresh(e);
+    const VkTexImage *r = e && !(e->upload_failed && !e->uploaded && !e->pub.gpu_owned) ? &e->pub : NULL;
     unlock();
-    return e ? &e->pub : NULL;
+    return r;
 }
 
 // Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
@@ -1543,10 +1558,10 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     }
     Tex *e = s->ce;
     // Bindings of one submit share one check, answered from the submit's write-watch snapshot (guest writes during a
-    // replay race the GPU read on hardware too). After one check an entry is either uploaded or never uploads (not
-    // mirrored, GPU-owned or no CPU layout), so a slot that checked its entry in this submit has nothing left to do.
+    // replay race the GPU read on hardware too). Failed uploads retry next submit,
+    // not on every draw or through every slot naming the same image.
     if (e && s->cepoch != submit_epoch) {
-        if (!e->uploaded || e->checked != submit_epoch) {
+        if (e->checked != submit_epoch) {
             make_fresh_snap(e);
             e->checked = submit_epoch;
         }
@@ -1554,7 +1569,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
-    return e ? &e->pub : NULL;
+    return e && !(e->upload_failed && !e->uploaded && !e->pub.gpu_owned) ? &e->pub : NULL;
 }
 
 // vk_dump: the swizzle selectors of the descriptor registered in slot id; 0 when the slot is empty.

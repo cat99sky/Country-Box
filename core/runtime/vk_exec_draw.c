@@ -1251,6 +1251,12 @@ static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int s
         if (m->epoch != ep) {   // the slot's first binding in this submission: only its storage check is due
             vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
             m->epoch = ep;
+            // A retry can replace a dummy image, or change the valid mip clamp.
+            // Recheck after the upload before handing out the old descriptor.
+            if (!slot_still(&m->gen, m->tok, h, vk_texture_slots_gen())) {
+                m->valid = 0;
+                return tex_info_full(ex, r, h, storage, separate, out, &image);
+            }
         }
         *out = m->out;
         out->imageLayout = m->image && ex->nfbl && in_fbl(ex, m->image) ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
