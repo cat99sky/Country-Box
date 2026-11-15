@@ -70,6 +70,7 @@ typedef struct Tex {
                                   // copies only the written blocks
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
     uint8_t astc_pending;         // in astc_pend: levels below pub.min_lod still to decode (MP4_ASTC_BUDGET)
+    uint8_t astc_fail;            // ASTC: GPU decodes that could not be recorded; from 2 on, decode on the CPU
 } Tex;
 
 // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
@@ -690,7 +691,9 @@ static int upload_levels(Tex *e, UpStat *st, uint32_t lv0, uint32_t lv1) {
     if (lv0 >= lv1) return 0;
     int whole = lv0 == 0 && lv1 == levels;
     int astc = e->f.astc_bw != 0, rgb = e->f.expand_rgb;
-    int agpu = astc && vk_astc_gpu(), acheck = agpu && vk_astc_mode() == VK_ASTC_CHECK;   // raw blocks to the GPU
+    // A texture whose GPU decodes could not be recorded twice decodes on the CPU from here on: the raw blocks
+    // reach a buffer the CPU decodes, so the image still gets its content instead of staying unwritten.
+    int agpu = astc && vk_astc_gpu() && e->astc_fail < 2, acheck = agpu && vk_astc_mode() == VK_ASTC_CHECK;
     uint32_t n = (lv1 - lv0) * layers, k = 0;
     VkBufferImageCopy *rg = calloc(n, sizeof *rg);
     VkAstcRegion *ar = agpu ? calloc(n, sizeof *ar) : NULL;
@@ -755,9 +758,19 @@ static int upload_levels(Tex *e, UpStat *st, uint32_t lv0, uint32_t lv1) {
         checked = vk_astc_record(cb, sb, total, ar, (int)n, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.astc_bc, e->pub.image,
                                  e->pub.aspect, rbuf);
         perf_end(PERF_ASTC, a0);
-        if (!checked)
+        if (!checked) {
             log_limited(&n_undecoded, "ASTC texture %#llx (fmt %#x %ux%u) not decoded on the GPU: left as it was",
                         (unsigned long long)e->pub.addr, d->format, d->width, d->height);
+            // Nothing was written: report the upload as failed so the texture stays unuploaded and the next bind
+            // retries, instead of handing the caller an image that only holds whatever the memory had. The second
+            // failure turns the GPU path off for this texture (agpu above), so the retry decodes on the CPU.
+            if (e->astc_fail < 2) e->astc_fail++;
+            barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+            free(raw_copy);
+            free(ar);
+            free(rg);
+            return 0;
+        }
     } else {
         vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
     }
@@ -867,8 +880,19 @@ static void astc_pend_step(void) {
         uint64_t t = level_texels(e, lv);
         if (done && astc_used_now() + t > b) break;
         UpStat st;
-        if (!upload_levels(e, &st, lv, lv + 1)) {   // no CPU layout: stop clamping
-            set_min_lod(e, 0);
+        uint8_t fail0 = e->astc_fail;
+        if (!upload_levels(e, &st, lv, lv + 1)) {
+            if (e->astc_fail != fail0) {
+                // A decode that could not be recorded wrote nothing: keep the clamp at the last level that was
+                // written (clearing it would let the unwritten larger levels be sampled) and retry later. The
+                // texture moves to the back so the other pending ones still progress this frame.
+                if (e != astc_pend[nastc_pend - 1]) {
+                    memmove(astc_pend, astc_pend + 1, (size_t)(nastc_pend - 1) * sizeof *astc_pend);
+                    astc_pend[nastc_pend - 1] = e;
+                }
+                break;
+            }
+            set_min_lod(e, 0);   // no CPU layout: stop clamping
             astc_pend_remove(e);
             continue;
         }
