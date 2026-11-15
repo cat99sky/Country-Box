@@ -1367,6 +1367,10 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     }
     in_store(s->iid, stage, control, code, r, a);
     plat_atomic_inc(&n_xlated);
+    // MP4_TRACE=gfx: name each program translated in this run, so a cache miss can be tied to a shader and compared
+    // against the prepared list (shader-prepared.bin). Off by default; one line per translated program.
+    if (rt_trace & RT_TRACE_GFX)
+        rt_log("gfx_shader: translated %s stage %d (%u bytes of code)", hex, stage, r->length);
     return mem_insert(s);
 }
 
