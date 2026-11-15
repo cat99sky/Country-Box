@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — next version (1.0.6), in testing
+
+- **Installing from RecompLauncher.** It didn't work properly: after picking your copy, setup stopped with "Its setup
+  program is missing", so installing and launching from RecompLauncher wasn't reliable. Country-Box's RecompLauncher
+  file pointed at the wrong program. That file is fixed now, and RecompLauncher reads it straight from this
+  repository, so the fix applies without waiting for a new version. This should fix it; I'm on it and testing it on
+  a Steam Deck right now.
+- **Steam Deck: prepare the game on the Deck itself.** SteamOS has no compiler, so until now a Deck could only play a
+  build made on a PC. Country-Box now carries the tools it needs to prepare the game. They are used only while a game
+  is being prepared, and nothing is installed on your system. Because of that, **the download grows from about 10 MB
+  to about 200 MB**.
+- **An update never takes PLAY away.** After updating Country-Box, your games keep playing as before; *Prepare
+  update* is optional and brings the newest fixes when you like. Until now the card asked you to prepare first, which
+  on a Steam Deck meant you couldn't play.
+- **B exits** Country-Box from the Games tab (handy on the Steam Deck).
+- About: the text no longer runs past the bottom of the panel on the Steam Deck's screen.
+- Start a game directly, skipping the launcher: `--returns` or `--freeze` (also `--play returns` / `--play freeze`),
+  handy as Steam launch options or in a desktop shortcut. If the game can't start yet, a window tells you why
+  ([#6](https://github.com/zWalt01/Country-Box/issues/6)).
+
 ## 1.0.5 — 2026-11-14
 
 - *Donkey Kong Country Returns HD* now accepts copies of the **physical cartridge**. Until now the launcher only

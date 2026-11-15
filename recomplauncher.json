@@ -39,6 +39,8 @@
   ],
   "start": {
     "program": [
+      "Country-Box-linux-x86_64.AppImage",
+      "Country-Box-1.0.5-linux-x86_64.AppImage",
       "AppRun",
       "usr/bin/country-box-launcher"
     ],
@@ -46,6 +48,8 @@
   },
   "prepare": {
     "program": [
+      "Country-Box-linux-x86_64.AppImage",
+      "Country-Box-1.0.5-linux-x86_64.AppImage",
       "AppRun",
       "usr/bin/country-box-launcher"
     ],
