@@ -4,15 +4,19 @@
 //   -Icore/runtime/third_party/vma core/tests/texture_upload_test.c \
 //   -Wl,--gc-sections -lpthread -lm -o /tmp/texture-upload-test
 #include "../runtime/vk_texture.c"
+#undef NDEBUG  // Keep fault-injection assertions active in optimized test builds.
 #include <assert.h>
 
 GfxStats gfx_counters;
 unsigned rt_trace;
 static VkCtx context = {.has_min_lod = 1};
 static int decode_ok = 1, calls, begins, ends, perf_tex_ends, copies;
+static int last_regions;
+static uint32_t last_level;
+static uint64_t upload_notes[VK_UPN_N];
 static VkImage fail_image;
 static int change = 1;
-static uint8_t staging[16384];
+static uint8_t staging[512 * 512];
 
 VkCtx *vk_ctx(void) { return &context; }
 const char *cfg_get(const char *s) { return NULL; }
@@ -28,7 +32,10 @@ int vk_astc_mode(void) { return VK_ASTC_GPU; }
 VkCommandBuffer vk_upload_begin(void) { begins++; return (VkCommandBuffer)1; }
 void vk_upload_end(void) { ends++; }
 uint64_t vk_upload_flush(int wait) { return 0; }
-void vk_upload_note(int kind, uint64_t n) {}
+void vk_upload_note(int kind, uint64_t n) {
+    assert(begins == ends + 1);
+    upload_notes[kind] += n;
+}
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *a) {
     assert(size <= sizeof staging); *buf = (VkBuffer)1; return staging;
 }
@@ -37,6 +44,8 @@ int nvn_deswizzle(const nvn_texdesc *d, unsigned l, unsigned a, const void *s, v
 int vk_astc_record(VkCommandBuffer c, VkBuffer s, VkDeviceSize sz, const VkAstcRegion *r, int n,
                    uint32_t bw, uint32_t bh, int srgb, int bc, VkImage img, VkImageAspectFlags aspect, VkBuffer rb) {
     calls++;
+    last_regions = n;
+    last_level = r[0].level;
     return decode_ok && img != fail_image;
 }
 void vkCmdPipelineBarrier2(VkCommandBuffer c, const VkDependencyInfo *d) {}
@@ -72,12 +81,15 @@ int main(void) {
     decode_ok = 0;
     assert(!upload_levels(&a, &st, 0, 3));
     assert(begins == ends && copies == 0);   // cleanup without copying raw ASTC into RGBA/BC3
+    assert(upload_notes[VK_UPN_ASTC] == 0 && upload_notes[VK_UPN_ASTC_TEXELS] == 0);
+    assert(upload_notes[VK_UPN_FULL] == 0);
     upload(&a);
     assert(a.upload_failed && !a.uploaded && a.n_up == 0 && perf_tex_ends == 1);
     uint32_t generation = slots_gen;
     decode_ok = 1;
     make_fresh_snap(&a);
     assert(a.uploaded && !a.upload_failed && a.n_up == 1 && slots_gen != generation);
+    assert(upload_notes[VK_UPN_ASTC] == 1 && upload_notes[VK_UPN_ASTC_TEXELS] == 336);
 
     a.wgen = 4;
     decode_ok = 0;
@@ -124,7 +136,47 @@ int main(void) {
     astc_pend_step();
     assert(calls - before == 2 && nastc_pend == 2);  // all failures are bounded, no spin
     assert(a.pub.min_lod == 2 && b.pub.min_lod == 2);
+
+    // A failed re-upload leaves an old mip tail in the queue. Recover without another bind.
+    a.wgen = 4;
+    change = 1;
+    make_fresh(&a);
+    assert(a.upload_failed && a.astc_pending && a.wgen == 4);
+    change = 0;
+    decode_ok = 1;
+    fail_image = a.pub.image;
+    gfx_counters.frames++;
+    before = calls;
+    astc_pend_step();
+    assert(calls - before == 3 && a.upload_failed && a.wgen == 4 && a.pub.min_lod == 2);
+    assert(nastc_pend == 1 && !b.astc_pending);
+    fail_image = VK_NULL_HANDLE;
+    gfx_counters.frames++;
+    before = calls;
+    astc_pend_step();
+    assert(calls - before == 1 && last_regions == 3);  // refresh an entire generation, not just the next mip
+    assert(!a.upload_failed && a.wgen == 9 && a.pub.min_lod == 0 && nastc_pend == 0);
+
+    // With a nearly spent frame budget, refresh the tail and leave the finest mip for later.
+    a = texture(1);
+    a.t.d.width = a.t.d.height = 512;
+    a.pub.min_lod = 2;
+    a.uploaded = a.astc_pending = 1;
+    a.upload_failed = 1;
+    queue[0] = &a;
+    nastc_pend = 1;
+    gfx_counters.frames++;
+    astc_frame = gfx_counters.frames;
+    astc_used = astc_budget() - 1;
+    before = calls;
+    astc_pend_step();
+    assert(calls - before == 1 && last_level == 1 && last_regions == 2);
+    assert(!a.upload_failed && a.pub.min_lod == 1 && nastc_pend == 1);
+    gfx_counters.frames++;
+    astc_pend_step();
+    assert(calls - before == 2 && last_level == 0 && last_regions == 1);
+    assert(a.pub.min_lod == 0 && nastc_pend == 0);
     assert(begins == ends);
-    puts("PASS: decode failure, cleanup, first upload recovery, consumed-write retries, mip clamp, FIFO progress");
+    puts("PASS: upload census, cleanup, consumed-write retries, mip clamp and pending recovery");
     return 0;
 }

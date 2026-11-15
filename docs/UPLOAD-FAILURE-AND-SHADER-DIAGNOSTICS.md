@@ -17,6 +17,9 @@ Successful levels alone lower the clamp. The descriptor memo is checked again
 after a freshness check, so recovery or a changed clamp cannot reuse the old
 descriptor in that lookup. A persistent failure can still leave a dummy or coarse
 texture visible; this patch protects validity and retries, not decoder recovery.
+The pending queue also retries a failed re-upload without another bind, using
+the normal freshness check to refresh the mip tail for the new write generation
+before lowering its clamp. The upload census counts only recorded uploads.
 
 The existing ASTC decoder, budget, compression mode, and `0x880` shader key
 contract are unchanged. Raw ASTC bytes are never used as an RGBA/BC3 fallback.

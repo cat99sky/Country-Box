@@ -763,8 +763,13 @@ static int upload_levels(Tex *e, UpStat *st, uint32_t lv0, uint32_t lv1) {
         vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
     }
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
-    if (agpu) vk_upload_note(VK_UPN_ASTC, 1), vk_upload_note(VK_UPN_ASTC_TEXELS, decoded / 4);
-    else vk_upload_note(VK_UPN_FULL, 1), vk_upload_note(VK_UPN_FULL_BYTES, total);
+    if (checked) {
+        vk_upload_note(VK_UPN_ASTC, 1);
+        vk_upload_note(VK_UPN_ASTC_TEXELS, decoded / 4);
+    } else if (!agpu) {
+        vk_upload_note(VK_UPN_FULL, 1);
+        vk_upload_note(VK_UPN_FULL_BYTES, total);
+    }
     vk_upload_end();
     if (acheck) {   // waits for the GPU
         vk_upload_flush(1);
@@ -852,6 +857,8 @@ static uint32_t astc_first_level(const Tex *e) {
     return k;
 }
 
+static void make_fresh_snap(Tex *e);
+
 // Once per frame (vk_texture_new_submit, before the submission's recording is flushed with its uploads): the next
 // level of the pending textures, oldest first, while the frame's budget lasts (at least one level per frame).
 static void astc_pend_step(void) {
@@ -866,19 +873,29 @@ static void astc_pend_step(void) {
         if (!e->pub.min_lod) { astc_pend_remove(e); left--; continue; }
         uint32_t lv = e->pub.min_lod - 1u;
         uint64_t t = level_texels(e, lv);
-        if (done && astc_used_now() + t > b) break;
-        UpStat st;
-        if (e->upload_failed || !upload_levels(e, &st, lv, lv + 1)) {
-            // Keep sampling the last valid tail. Retry at most once this frame,
-            // behind the other textures; a failed decoder must not block the FIFO.
+        uint64_t used = astc_used_now();
+        if (e->upload_failed) {
+            if (done && used >= b) break;
+            // Refresh the new generation's mip tail before exposing any of its finer levels.
+            make_fresh_snap(e);
+            e->checked = submit_epoch;
+            if (!e->upload_failed) done++;
+        } else {
+            if (done && used + t > b) break;
+            UpStat st;
+            if (upload_levels(e, &st, lv, lv + 1)) {
+                astc_used += t, done++, n_pend_levels++;
+                set_min_lod(e, lv);
+                if (!lv) { astc_pend_remove(e); left--; }
+                continue;
+            }
+        }
+        // Failed decodes and refreshed tails yield to the other pending textures this frame.
+        if (e->astc_pending) {
             memmove(astc_pend, astc_pend + 1, (size_t)(nastc_pend - 1) * sizeof *astc_pend);
             astc_pend[nastc_pend - 1] = e;
-            left--;
-            continue;
         }
-        astc_used += t, done++, n_pend_levels++;
-        set_min_lod(e, lv);
-        if (!lv) { astc_pend_remove(e); left--; }
+        left--;
     }
 }
 
