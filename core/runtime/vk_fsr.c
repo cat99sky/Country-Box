@@ -169,7 +169,10 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     if (sharp > 100) sharp = 100;
     // Country-Box: at 1:1 (the window as large as the game's picture) FSR still runs when sharpening is on: EASU
     // copies, RCAS sharpens, so the sharpness setting works at native size too. Smaller windows take the blit.
-    int up = dw > (uint32_t)cw || dh > (uint32_t)ch, same = dw == (uint32_t)cw && dh == (uint32_t)ch;
+    // Country-Box: a slight enlargement takes the blit too. EASU at under 1.25x (the Steam Deck: 1280x720 stretched to
+    // 1280x800, 1.11x in one axis) turns edges into steps, which looked blocky next to the bilinear blit (Walter on
+    // the Deck, 2026-11-15).
+    int up = dw * 4 >= (uint32_t)cw * 5 || dh * 4 >= (uint32_t)ch * 5, same = dw == (uint32_t)cw && dh == (uint32_t)ch;
     if (strcmp(cfg_value("MP4_UPSCALER"), "fsr") || !(up || (same && sharp > 0)) || !fmt) return 0;
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);

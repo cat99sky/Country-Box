@@ -16,6 +16,9 @@
   on a Steam Deck meant you couldn't play.
 - **B exits** Country-Box from the Games tab (handy on the Steam Deck).
 - About: the text no longer runs past the bottom of the panel on the Steam Deck's screen.
+- Steam Deck: with FSR on, the picture looked blocky. The Deck's screen is only slightly taller than the game's
+  picture, and FSR is made for bigger enlargements; for small ones the regular scaling is used now, which looks
+  smoother.
 - Start a game directly, skipping the launcher: `--returns` or `--freeze` (also `--play returns` / `--play freeze`),
   handy as Steam launch options or in a desktop shortcut. If the game can't start yet, a window tells you why
   ([#6](https://github.com/zWalt01/Country-Box/issues/6)).
